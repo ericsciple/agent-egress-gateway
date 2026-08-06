@@ -1,0 +1,3 @@
+# the built binary, not the cmd/ package of the same name
+/agent-gateway
+*.pem
