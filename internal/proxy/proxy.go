@@ -37,9 +37,14 @@ type DialFunc func(host string) (net.Conn, error)
 type Proxy struct {
 	cfg *config.Config
 	ca  *ca.CA
-	// Dial opens the upstream connection. It receives the host the lane was
-	// matched on and nothing else, which is what keeps the two from diverging.
+	// Dial opens the upstream connection in intercept mode. It receives the host
+	// the lane was matched on and nothing else, which is what keeps the two from
+	// diverging.
 	Dial DialFunc
+	// Transport, when set, replaces the default upstream transport in runner
+	// mode. Tests use it to observe what was actually dialled; production leaves
+	// it nil.
+	Transport http.RoundTripper
 	// Log receives one audit line per request.
 	Log func(string)
 }

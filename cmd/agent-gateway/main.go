@@ -5,27 +5,31 @@
 // The real credential lives only in this process. The guest holds a placeholder,
 // which is worth nothing on its own.
 //
-// # Two front doors
+// # Two topologies
 //
-// redirect (default)
+// intercept (default)
 //
-//	Connections arrive from a netfilter REDIRECT rule. Used by agent-microvm,
-//	where the rule is on the runner, and by agent-sandbox, where it is inside
-//	the guest.
+//	Connections arrive from a netfilter REDIRECT rule and this process
+//	terminates TLS itself. Used by agent-microvm, where the rule sits on the
+//	runner, outside the guest's reach.
 //
-// preamble
+// runner
 //
-//	Connections arrive over a relay that cannot preserve the original
-//	destination, so the client sends one line naming it before the TLS stream
-//	begins. The value is logged and never trusted for routing.
+//	TLS has already been terminated by a shim inside the guest, and the request
+//	arrives over the dev tunnel as ordinary HTTP naming its destination in
+//	X-Agent-Gateway-Host. Used by agent-sandbox, because the tunnel carries HTTP
+//	request/response rather than a raw byte stream.
+//
+// In both, the credential and the upstream dial stay in this process, so the
+// guest never holds a real credential either way.
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 
@@ -37,7 +41,7 @@ import (
 func main() {
 	var (
 		listen   = flag.String("listen", ":8080", "address to listen on")
-		mode     = flag.String("mode", "redirect", "how connections arrive: redirect or preamble")
+		mode     = flag.String("mode", "intercept", "topology: intercept (terminate TLS here) or runner (TLS already terminated in the guest)")
 		caOut    = flag.String("ca-out", "", "write the CA certificate here, for the guest trust store")
 		lanesEnv = flag.String("lanes-env", "GW_LANES", "environment variable holding the lane JSON")
 	)
@@ -59,11 +63,6 @@ func main() {
 		log.Printf("[gateway] CA written to %s", *caOut)
 	}
 
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
-		log.Fatalf("[gateway] listening on %s: %v", *listen, err)
-	}
-
 	p := proxy.New(cfg, authority)
 
 	log.Printf("[gateway] listening on %s mode=%s", *listen, *mode)
@@ -77,43 +76,31 @@ func main() {
 		log.Printf("[gateway]   lane %q header=%s targets=%s", l.Name, l.HeaderName(), strings.Join(targets, ","))
 	}
 
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("[gateway] accept: %v", err)
-			continue
+	switch *mode {
+	case "runner":
+		if err := http.ListenAndServe(*listen, p.RunnerHandler()); err != nil {
+			log.Fatalf("[gateway] serving: %v", err)
 		}
-		go serve(p, conn, *mode)
-	}
-}
-
-func serve(p *proxy.Proxy, conn net.Conn, mode string) {
-	switch mode {
-	case "preamble":
-		// One line naming the destination the guest was headed for, then the TLS
-		// stream. Diagnostic only.
-		br := bufio.NewReader(conn)
-		line, err := br.ReadString('\n')
+	case "intercept":
+		ln, err := net.Listen("tcp", *listen)
 		if err != nil {
-			log.Printf("[gateway] reading preamble: %v", err)
-			conn.Close()
-			return
+			log.Fatalf("[gateway] listening on %s: %v", *listen, err)
 		}
-		p.Serve(&preambleConn{Conn: conn, reader: br}, strings.TrimSpace(line))
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				log.Printf("[gateway] accept: %v", err)
+				continue
+			}
+			go func(c net.Conn) {
+				dst, err := proxy.OriginalDestination(c)
+				if err != nil {
+					dst = fmt.Sprintf("unknown (%v)", err)
+				}
+				p.Serve(c, dst)
+			}(conn)
+		}
 	default:
-		dst, err := proxy.OriginalDestination(conn)
-		if err != nil {
-			dst = fmt.Sprintf("unknown (%v)", err)
-		}
-		p.Serve(conn, dst)
+		log.Fatalf("[gateway] unknown mode %q: want intercept or runner", *mode)
 	}
 }
-
-// preambleConn hands back the bytes the preamble reader buffered ahead of the
-// TLS stream.
-type preambleConn struct {
-	net.Conn
-	reader *bufio.Reader
-}
-
-func (c *preambleConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
