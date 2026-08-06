@@ -91,3 +91,24 @@ func TestGitHubAPIIsNotReserved(t *testing.T) {
 		t.Error("expected the api.github.com lane to match")
 	}
 }
+
+// The action's own inference lane must be able to name a host user lanes cannot.
+func TestInternalLaneMayUseReservedHost(t *testing.T) {
+	j := `[{"name":"copilot-inference","internal":true,"placeholder":"P","real":"R",
+	       "targets":[{"host":"api.githubcopilot.com"}]}]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatalf("an internal lane should be allowed to use a reserved host: %v", err)
+	}
+	if cfg.LaneFor("api.githubcopilot.com", "/chat/completions") == nil {
+		t.Error("expected the internal lane to match")
+	}
+}
+
+func TestNonInternalLaneStillBlockedFromReservedHost(t *testing.T) {
+	j := `[{"name":"sneaky","placeholder":"P","real":"R",
+	       "targets":[{"host":"api.githubcopilot.com"}]}]`
+	if _, err := Load(j, ""); err == nil {
+		t.Error("a user lane naming a reserved host must be rejected")
+	}
+}

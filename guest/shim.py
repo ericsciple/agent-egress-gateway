@@ -47,6 +47,11 @@ LISTEN_PORT = int(os.environ.get("SHIM_PORT", "8443"))
 TUNNEL_URL = os.environ.get("SHIM_TUNNEL_URL", "")
 TUNNEL_TOKEN = os.environ.get("SHIM_TUNNEL_TOKEN", "")
 CERT_DIR = os.environ.get("SHIM_CERT_DIR", "/tmp/agent-shim")
+# The tunnel's own hostname. Traffic to it is excluded from the redirect by
+# address, but DNS can hand back an address that exclusion missed. Refusing it
+# here turns that into a clear error instead of an infinite loop through
+# ourselves.
+TUNNEL_HOST = urllib.parse.urlsplit(os.environ.get("SHIM_TUNNEL_URL", "")).hostname or ""
 HOST_HEADER = "X-Agent-Gateway-Host"
 
 # Headers belonging to the guest's own hop, which must not be forwarded.
@@ -192,6 +197,13 @@ def handle(sock, authority, base_context):
     try:
         if not host:
             log("no SNI (original_dst=%s), dropping" % peer_dst)
+            return
+
+        if TUNNEL_HOST and host.lower() == TUNNEL_HOST.lower():
+            log("refusing tunnel-bound traffic for %s: the redirect exclusion missed an "
+                "address, so this would loop back through the shim" % host)
+            tls.sendall(b"HTTP/1.1 508 Loop Detected\r\nContent-Length: 0\r\n"
+                        b"Connection: close\r\n\r\n")
             return
 
         stream = tls.makefile("rb")

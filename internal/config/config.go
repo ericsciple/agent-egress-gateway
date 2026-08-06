@@ -31,6 +31,10 @@ type Lane struct {
 	// "Authorization". The swap never touches any other header or the body.
 	Header  string   `json:"header,omitempty"`
 	Targets []Target `json:"targets"`
+	// Internal marks a lane the action creates for itself, such as the Copilot
+	// inference lane. Only internal lanes may name a reserved host. This comes
+	// from the runner-side configuration and is never influenced by the guest.
+	Internal bool `json:"internal,omitempty"`
 }
 
 // HeaderName returns the header this lane swaps in, lowercased for comparison.
@@ -122,7 +126,7 @@ func Load(lanesJSON, egressAllow string) (*Config, error) {
 			if strings.TrimSpace(t.Host) == "" {
 				return nil, fmt.Errorf("lane %q target %d: host is required", l.Name, j)
 			}
-			if reservedHosts[strings.ToLower(t.Host)] {
+			if reservedHosts[strings.ToLower(t.Host)] && !l.Internal {
 				return nil, fmt.Errorf("lane %q target %d: host %q is reserved", l.Name, j, t.Host)
 			}
 			if t.PathPrefix != "" && !strings.HasPrefix(t.PathPrefix, "/") {
