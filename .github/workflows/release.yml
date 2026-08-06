@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Test
+        run: go test -race ./...
+
+      # The gateway only ever runs on Linux: on the Actions runner for
+      # agent-microvm, and inside the guest for agent-sandbox.
+      - name: Build
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" \
+              -o "dist/agent-gateway_linux_${arch}" ./cmd/agent-gateway
+          done
+          ls -lh dist/
+
+      # Consumers verify against this rather than trusting the download.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum agent-gateway_linux_* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/agent-gateway_linux_amd64 \
+            dist/agent-gateway_linux_arm64 \
+            dist/SHA256SUMS
