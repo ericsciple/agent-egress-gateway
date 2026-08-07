@@ -173,3 +173,31 @@ func TestSelectOnlyLooksAtTheDeclaredHeader(t *testing.T) {
 		t.Error("a placeholder in an undeclared header must not select the lane")
 	}
 }
+
+// A path prefix grants what it says and nothing adjacent. Without segment-boundary
+// matching, /projects/acme would also cover /projects/acmeEVIL, which is a wider
+// grant than the author wrote and differs by no visible character.
+func TestPathPrefixMatchesOnSegmentBoundaries(t *testing.T) {
+	j := `[{"name":"sentry","placeholder":"P","real":"R",
+	        "targets":[{"host":"sentry.io","path_prefix":"/api/0/projects/acme"}]}]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/api/0/projects/acme", true},
+		{"/api/0/projects/acme/", true},
+		{"/api/0/projects/acme/issues", true},
+		{"/api/0/projects/acmeEVIL", false},
+		{"/api/0/projects/acmeEVIL/secrets", false},
+		{"/api/0/projects/acme-staging", false},
+	}
+	for _, c := range cases {
+		if got := len(cfg.LanesFor("sentry.io", c.path)) > 0; got != c.want {
+			t.Errorf("%s: reachable=%v, want %v", c.path, got, c.want)
+		}
+	}
+}

@@ -48,14 +48,26 @@ func (l Lane) HeaderName() string {
 // Matches reports whether host and path fall within this lane's targets.
 //
 // Host comparison is case-insensitive because DNS names are. Path comparison is
-// an exact prefix: no globbing, deliberately.
+// a prefix with no globbing, deliberately, and it only matches on a path segment
+// boundary: /projects/acme covers /projects/acme and /projects/acme/issues, but
+// not /projects/acmeEVIL. A raw string prefix would quietly grant a wider scope
+// than the author wrote, and the difference is one character they cannot see.
 func (l Lane) Matches(host, path string) bool {
 	host = strings.ToLower(host)
 	for _, t := range l.Targets {
 		if strings.ToLower(t.Host) != host {
 			continue
 		}
-		if t.PathPrefix == "" || strings.HasPrefix(path, t.PathPrefix) {
+		if t.PathPrefix == "" {
+			return true
+		}
+		if !strings.HasPrefix(path, t.PathPrefix) {
+			continue
+		}
+		// A prefix ending in / already lands on a boundary. Otherwise the next
+		// character has to be one, or the path has to end there.
+		rest := path[len(t.PathPrefix):]
+		if strings.HasSuffix(t.PathPrefix, "/") || rest == "" || strings.HasPrefix(rest, "/") {
 			return true
 		}
 	}
