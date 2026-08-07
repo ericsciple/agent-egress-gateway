@@ -50,19 +50,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        # Idempotent: a tag push and a manual dispatch can both target the same
-        # tag, and re-running a failed release must not be blocked by the release
-        # the first attempt already created.
+        # Idempotent, but never destructive. A tag push and a manual dispatch can
+        # target the same tag, so a second run must not fail outright, and it must
+        # also not replace bytes that consumers have already pinned by digest:
+        # a published tag has to keep meaning the same artifact. Only assets that
+        # are missing get uploaded, which lets a partial failure be completed
+        # without rewriting a finished release.
         run: |
           set -euo pipefail
-          assets="dist/agent-gateway_linux_amd64 dist/agent-gateway_linux_arm64 dist/SHA256SUMS"
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $TAG exists, replacing its assets"
-            gh release upload "$TAG" --repo "${{ github.repository }}" --clobber $assets
-          else
+          assets="agent-gateway_linux_amd64 agent-gateway_linux_arm64 SHA256SUMS"
+
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
               --title "$TAG" \
               --generate-notes \
-              $assets
+              $(for a in $assets; do echo "dist/$a"; done)
+            exit 0
           fi
+
+          echo "release $TAG already exists; uploading only what is missing"
+          existing=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          for a in $assets; do
+            if grep -qx "$a" <<<"$existing"; then
+              echo "  $a already published, leaving it alone"
+            else
+              echo "  uploading $a"
+              gh release upload "$TAG" --repo "${{ github.repository }}" "dist/$a"
+            fi
+          done
