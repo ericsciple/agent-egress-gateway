@@ -70,9 +70,17 @@ type Config struct {
 	EgressAllow map[string]bool
 }
 
-// reservedHosts may never be named by a lane. api.githubcopilot.com is the
-// inference lane's upstream and carries our own token, so a user-declared lane
-// pointing at it could shadow or collide with that.
+// reservedHosts may never be named by a non-internal lane.
+//
+// Not a security control. The upstream is always the host the lane matched, so a
+// user lane naming api.githubcopilot.com could not redirect our token anywhere;
+// the worst it could do is send that user's own credential to a host they named
+// explicitly.
+//
+// It is rejected because it would be inert. Matching is first-match-wins and the
+// action puts the inference lane first, so a user lane on that host is shadowed:
+// it never matches, never swaps, and gives no hint as to why. Failing at startup
+// is kinder than a credential that silently does nothing.
 //
 // Note api.github.com is deliberately NOT reserved: pointing a user-supplied
 // token at the REST API is a legitimate use wherever MCP has gaps, and blocking
