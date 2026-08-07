@@ -43,6 +43,12 @@ import urllib.parse
 
 SO_ORIGINAL_DST = 80
 
+# The SNI name is only available inside the handshake callback: server_hostname is
+# a client-side attribute and is always None on an accepted socket. The handshake
+# runs in the same thread that accepted the connection, so stashing it here is
+# safe and keeps it off the socket object.
+_handshake = threading.local()
+
 LISTEN_PORT = int(os.environ.get("SHIM_PORT", "8443"))
 TUNNEL_URL = os.environ.get("SHIM_TUNNEL_URL", "")
 TUNNEL_TOKEN = os.environ.get("SHIM_TUNNEL_TOKEN", "")
@@ -91,33 +97,49 @@ class Authority:
 
     def _generate_ca(self):
         subprocess.run(
-            ["openssl", "req", "-x509", "-newkey", "ec",
+            ["openssl", "req", "-x509", "-sha256", "-newkey", "ec",
              "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
              "-keyout", self.key, "-out", self.crt,
              "-days", "1", "-subj", "/CN=agent egress interceptor"],
             check=True, capture_output=True)
         log("CA generated at %s" % self.crt)
 
+    def default_leaf(self):
+        """A placeholder server certificate for the base context.
+
+        Only ever presented to a client that sent no SNI, which we drop anyway.
+        It exists so cipher selection succeeds and the SNI callback gets a chance
+        to run.
+        """
+        self._mint("_default")
+        return (os.path.join(self.dir, "_default.crt"), os.path.join(self.dir, "_default.key"))
+
+    def _mint(self, host):
+        key = os.path.join(self.dir, "%s.key" % host)
+        crt = os.path.join(self.dir, "%s.crt" % host)
+        csr = os.path.join(self.dir, "%s.csr" % host)
+        subprocess.run(
+            ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", key, "-out", csr, "-subj", "/CN=%s" % host],
+            check=True, capture_output=True)
+        subprocess.run(
+            # -sha256 is not optional: openssl x509 -req still defaults to SHA-1,
+            # and a SHA-1 signed certificate is refused outright by modern TLS
+            # stacks, which surfaces as NO_SHARED_CIPHER rather than as anything
+            # mentioning the digest.
+            ["openssl", "x509", "-req", "-sha256", "-in", csr,
+             "-CA", self.crt, "-CAkey", self.key, "-CAcreateserial",
+             "-out", crt, "-days", "1", "-extfile", "/dev/stdin"],
+            check=True, capture_output=True,
+            input=("subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n" % host).encode())
+        return crt, key
+
     def context_for(self, host):
         with self._lock:
             if host in self._contexts:
                 return self._contexts[host]
 
-            key = os.path.join(self.dir, "%s.key" % host)
-            crt = os.path.join(self.dir, "%s.crt" % host)
-            csr = os.path.join(self.dir, "%s.csr" % host)
-            subprocess.run(
-                ["openssl", "req", "-new", "-newkey", "ec",
-                 "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-                 "-keyout", key, "-out", csr, "-subj", "/CN=%s" % host],
-                check=True, capture_output=True)
-            subprocess.run(
-                ["openssl", "x509", "-req", "-in", csr,
-                 "-CA", self.crt, "-CAkey", self.key, "-CAcreateserial",
-                 "-out", crt, "-days", "1", "-extfile", "/dev/stdin"],
-                check=True, capture_output=True,
-                input=("subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n" % host).encode())
-
+            crt, key = self._mint(host)
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(crt, key)
             self._contexts[host] = ctx
@@ -186,6 +208,7 @@ def forward(method, target, headers, body, host):
 
 def handle(sock, authority, base_context):
     peer_dst = original_destination(sock)
+    _handshake.sni = None
     try:
         tls = base_context.wrap_socket(sock, server_side=True)
     except (ssl.SSLError, OSError) as exc:
@@ -193,7 +216,7 @@ def handle(sock, authority, base_context):
         sock.close()
         return
 
-    host = tls.server_hostname
+    host = getattr(_handshake, "sni", None)
     try:
         if not host:
             log("no SNI (original_dst=%s), dropping" % peer_dst)
@@ -241,10 +264,15 @@ def main():
     preflight()
     authority = Authority(CERT_DIR)
 
+    # The base context needs a usable SERVER certificate, not the CA. OpenSSL
+    # picks a cipher suite from the loaded certificate, and a CA certificate is
+    # not valid for server authentication, so loading it here fails the handshake
+    # with NO_SHARED_CIPHER before the SNI callback can swap anything in.
     base = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    base.load_cert_chain(authority.crt, authority.key)
+    base.load_cert_chain(*authority.default_leaf())
 
     def sni(sock, name, _ctx):
+        _handshake.sni = name
         if name:
             try:
                 sock.context = authority.context_for(name)
