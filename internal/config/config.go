@@ -152,14 +152,39 @@ func Load(lanesJSON, egressAllow string) (*Config, error) {
 	return cfg, nil
 }
 
-// LaneFor returns the lane authorised for host and path, or nil.
+// LanesFor returns every lane authorised for host and path, in declaration order.
+//
+// More than one is normal and is the point of matching on the placeholder as well
+// as the destination: a read-scoped and a write-scoped credential can address the
+// same endpoint, and the caller chooses between them by which placeholder it
+// carries. Selecting purely on destination would make all but the first
+// unreachable.
 //
 // Callers must pass the host they intend to connect to, never a value taken from
 // a request header. See proxy.handle.
-func (c *Config) LaneFor(host, path string) *Lane {
+func (c *Config) LanesFor(host, path string) []*Lane {
+	var out []*Lane
 	for i := range c.Lanes {
 		if c.Lanes[i].Matches(host, path) {
-			return &c.Lanes[i]
+			out = append(out, &c.Lanes[i])
+		}
+	}
+	return out
+}
+
+// Select picks the lane the caller actually asked for.
+//
+// A lane is chosen only when its own placeholder appears in its own declared
+// header, so nothing is scanned that we did not already intend to read. Returns
+// nil when the destination is authorised but no credential was requested, which
+// leaves the request unauthenticated rather than attaching one it did not ask
+// for.
+func Select(lanes []*Lane, header func(name string) []string) *Lane {
+	for _, l := range lanes {
+		for _, v := range header(l.HeaderName()) {
+			if strings.Contains(v, l.Placeholder) {
+				return l
+			}
 		}
 	}
 	return nil

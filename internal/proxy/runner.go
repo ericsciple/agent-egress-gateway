@@ -4,8 +4,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
+
+	"github.com/github/agent-gateway/internal/config"
 )
 
 // HostHeader carries the destination the guest was trying to reach.
@@ -75,14 +78,19 @@ func (p *Proxy) RunnerHandler() http.Handler {
 			host = h
 		}
 
-		lane := p.cfg.LaneFor(host, r.URL.Path)
+		// Host and path decide which credentials are permitted here; the
+		// placeholder decides which of them the caller actually asked for. Both
+		// matter: two credentials may share an endpoint.
+		lanes := p.cfg.LanesFor(host, r.URL.Path)
+		lane := config.Select(lanes, func(name string) []string {
+			return r.Header.Values(textproto.CanonicalMIMEHeaderKey(name))
+		})
 		switch {
 		case lane != nil:
-			if swap(r.Header, lane) {
-				p.Log(r.Method + " " + host + r.URL.Path + " lane=" + lane.Name + " swapped")
-			} else {
-				p.Log(r.Method + " " + host + r.URL.Path + " lane=" + lane.Name + " no placeholder")
-			}
+			swap(r.Header, lane)
+			p.Log(r.Method + " " + host + r.URL.Path + " lane=" + lane.Name + " swapped")
+		case len(lanes) > 0:
+			p.Log(r.Method + " " + host + r.URL.Path + " allowed, no placeholder presented")
 		case p.cfg.AllowsEgress(host):
 			p.Log(r.Method + " " + host + r.URL.Path + " allowed, no credential")
 		default:

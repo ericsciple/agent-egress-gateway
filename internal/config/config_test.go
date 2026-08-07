@@ -46,10 +46,10 @@ func TestMatchRespectsPathPrefix(t *testing.T) {
 		{"unknown.example", "/api/0/projects/acme/", ""},
 	}
 	for _, c := range cases {
-		lane := cfg.LaneFor(c.host, c.path)
+		lanes := cfg.LanesFor(c.host, c.path)
 		got := ""
-		if lane != nil {
-			got = lane.Name
+		if len(lanes) > 0 {
+			got = lanes[0].Name
 		}
 		if got != c.wantLane {
 			t.Errorf("LaneFor(%q, %q) = %q, want %q", c.host, c.path, got, c.wantLane)
@@ -87,7 +87,7 @@ func TestGitHubAPIIsNotReserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("api.github.com should be allowed as a lane target: %v", err)
 	}
-	if cfg.LaneFor("api.github.com", "/repos/acme/thing") == nil {
+	if len(cfg.LanesFor("api.github.com", "/repos/acme/thing")) == 0 {
 		t.Error("expected the api.github.com lane to match")
 	}
 }
@@ -100,7 +100,7 @@ func TestInternalLaneMayUseReservedHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an internal lane should be allowed to use a reserved host: %v", err)
 	}
-	if cfg.LaneFor("api.githubcopilot.com", "/chat/completions") == nil {
+	if len(cfg.LanesFor("api.githubcopilot.com", "/chat/completions")) == 0 {
 		t.Error("expected the internal lane to match")
 	}
 }
@@ -110,5 +110,66 @@ func TestNonInternalLaneStillBlockedFromReservedHost(t *testing.T) {
 	       "targets":[{"host":"api.githubcopilot.com"}]}]`
 	if _, err := Load(j, ""); err == nil {
 		t.Error("a user lane naming a reserved host must be rejected")
+	}
+}
+
+// Two credentials may share an endpoint: a read-scoped and a write-scoped token
+// for the same API, or two organisations. The caller chooses between them by the
+// placeholder it carries, so selecting purely on destination would leave all but
+// the first unreachable.
+func TestTwoCredentialsCanShareAnEndpoint(t *testing.T) {
+	j := `[
+	  {"name":"read","placeholder":"PH_READ","real":"REAL-READ","targets":[{"host":"api.example","path_prefix":"/v1/"}]},
+	  {"name":"write","placeholder":"PH_WRITE","real":"REAL-WRITE","targets":[{"host":"api.example","path_prefix":"/v1/"}]}
+	]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	lanes := cfg.LanesFor("api.example", "/v1/things")
+	if len(lanes) != 2 {
+		t.Fatalf("got %d candidate lanes, want both", len(lanes))
+	}
+
+	header := func(value string) func(string) []string {
+		return func(string) []string { return []string{value} }
+	}
+
+	if got := Select(lanes, header("Bearer PH_WRITE")); got == nil || got.Name != "write" {
+		t.Errorf("carrying the write placeholder selected %v, want the write lane", got)
+	}
+	if got := Select(lanes, header("Bearer PH_READ")); got == nil || got.Name != "read" {
+		t.Errorf("carrying the read placeholder selected %v, want the read lane", got)
+	}
+	if got := Select(lanes, header("Bearer something-else")); got != nil {
+		t.Errorf("carrying no known placeholder selected %v, want no lane", got.Name)
+	}
+}
+
+// A lane is only selected by its own declared header, so a placeholder sitting in
+// some other header does not pull a credential in.
+func TestSelectOnlyLooksAtTheDeclaredHeader(t *testing.T) {
+	j := `[{"name":"gitlab","placeholder":"PH_GL","real":"R","header":"Private-Token",
+	        "targets":[{"host":"gitlab.com"}]}]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	lanes := cfg.LanesFor("gitlab.com", "/api/v4/projects")
+
+	byName := func(want string) func(string) []string {
+		return func(name string) []string {
+			if name == want {
+				return []string{"PH_GL"}
+			}
+			return nil
+		}
+	}
+	if got := Select(lanes, byName("private-token")); got == nil {
+		t.Error("the placeholder in the declared header should select the lane")
+	}
+	if got := Select(lanes, byName("authorization")); got != nil {
+		t.Error("a placeholder in an undeclared header must not select the lane")
 	}
 }

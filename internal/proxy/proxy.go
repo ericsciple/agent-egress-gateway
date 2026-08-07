@@ -125,16 +125,21 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 			return
 		}
 
-		lane := p.cfg.LaneFor(host, req.URL.Path)
+		// Host and path decide which credentials are permitted here; the
+		// placeholder decides which of them the caller actually asked for. Both
+		// matter: two credentials may share an endpoint.
+		lanes := p.cfg.LanesFor(host, req.URL.Path)
+		lane := config.Select(lanes, func(name string) []string {
+			return req.Header.Values(textproto.CanonicalMIMEHeaderKey(name))
+		})
 		switch {
 		case lane != nil:
-			if swapped := swap(req.Header, lane); swapped {
-				p.Log(fmt.Sprintf("%s %s%s lane=%s swapped", req.Method, host, req.URL.Path, lane.Name))
-			} else {
-				// The destination is authorised but the caller did not ask for
-				// the credential, so the request goes on unauthenticated.
-				p.Log(fmt.Sprintf("%s %s%s lane=%s no placeholder", req.Method, host, req.URL.Path, lane.Name))
-			}
+			swap(req.Header, lane)
+			p.Log(fmt.Sprintf("%s %s%s lane=%s swapped", req.Method, host, req.URL.Path, lane.Name))
+		case len(lanes) > 0:
+			// The destination is authorised but the caller did not ask for a
+			// credential, so the request goes on unauthenticated.
+			p.Log(fmt.Sprintf("%s %s%s allowed, no placeholder presented", req.Method, host, req.URL.Path))
 		case p.cfg.AllowsEgress(host):
 			p.Log(fmt.Sprintf("%s %s%s allowed, no credential", req.Method, host, req.URL.Path))
 		default:

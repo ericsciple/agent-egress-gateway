@@ -174,3 +174,66 @@ func TestRunnerEgressAllowGetsNoCredential(t *testing.T) {
 		}
 	}
 }
+
+// The capability that "replace, not inject" exists to provide: two credentials on
+// one endpoint, chosen by the placeholder the caller carries. Selecting on
+// destination alone would make the second unreachable.
+func TestTwoCredentialsOnOneEndpoint(t *testing.T) {
+	twoLanes := `[
+	  {"name":"read","placeholder":"PH_READ_XYZ","real":"REAL-READ-TOKEN","targets":[{"host":"api.example","path_prefix":"/v1/"}]},
+	  {"name":"write","placeholder":"PH_WRITE_XYZ","real":"REAL-WRITE-TOKEN","targets":[{"host":"api.example","path_prefix":"/v1/"}]}
+	]`
+	cfg, err := config.Load(twoLanes, "")
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	authority, err := ca.New()
+	if err != nil {
+		t.Fatalf("ca.New: %v", err)
+	}
+
+	for _, c := range []struct{ placeholder, want string }{
+		{"PH_READ_XYZ", "REAL-READ-TOKEN"},
+		{"PH_WRITE_XYZ", "REAL-WRITE-TOKEN"},
+	} {
+		rt := &recordingTransport{}
+		p := New(cfg, authority)
+		p.Log = func(string) {}
+		p.Transport = rt
+
+		doRunner(p.RunnerHandler(), "api.example", "/v1/things",
+			map[string]string{"Authorization": "Bearer " + c.placeholder})
+
+		got := rt.lastHeader.Get("Authorization")
+		if got != "Bearer "+c.want {
+			t.Errorf("carrying %s produced %q, want %q", c.placeholder, got, "Bearer "+c.want)
+		}
+	}
+}
+
+// Reaching an authorised endpoint without carrying any placeholder still attaches
+// nothing, even when several credentials are permitted there.
+func TestNoPlaceholderAmongSeveralLanesAttachesNothing(t *testing.T) {
+	twoLanes := `[
+	  {"name":"read","placeholder":"PH_READ_XYZ","real":"REAL-READ-TOKEN","targets":[{"host":"api.example","path_prefix":"/v1/"}]},
+	  {"name":"write","placeholder":"PH_WRITE_XYZ","real":"REAL-WRITE-TOKEN","targets":[{"host":"api.example","path_prefix":"/v1/"}]}
+	]`
+	cfg, _ := config.Load(twoLanes, "")
+	authority, _ := ca.New()
+	rt := &recordingTransport{}
+	p := New(cfg, authority)
+	p.Log = func(string) {}
+	p.Transport = rt
+
+	rec := doRunner(p.RunnerHandler(), "api.example", "/v1/things", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	for _, vs := range rt.lastHeader {
+		for _, s := range vs {
+			if strings.Contains(s, "REAL-") {
+				t.Error("a credential was attached to a request that asked for none")
+			}
+		}
+	}
+}
