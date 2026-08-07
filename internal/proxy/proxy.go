@@ -25,8 +25,8 @@ import (
 	"net/textproto"
 	"strings"
 
-	"github.com/github/agent-gateway/internal/ca"
-	"github.com/github/agent-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/ca"
+	"github.com/ericsciple/agent-egress-gateway/internal/config"
 )
 
 // DialFunc opens a connection to an upstream host. Injected so tests can avoid

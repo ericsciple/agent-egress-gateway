@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/github/agent-gateway/internal/ca"
-	"github.com/github/agent-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/ca"
+	"github.com/ericsciple/agent-egress-gateway/internal/config"
 )
 
 // recordingTransport captures what the runner actually sent upstream, including

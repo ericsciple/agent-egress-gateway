@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/github/agent-gateway/internal/ca"
-	"github.com/github/agent-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/ca"
+	"github.com/ericsciple/agent-egress-gateway/internal/config"
 )
 
 const lanesJSON = `[

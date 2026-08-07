@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/github/agent-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/config"
 )
 
 // HostHeader carries the destination the guest was trying to reach.

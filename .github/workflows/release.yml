@@ -35,7 +35,7 @@ jobs:
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
               go build -trimpath -ldflags="-s -w" \
-              -o "dist/agent-gateway_linux_${arch}" ./cmd/agent-gateway
+              -o "dist/agent-egress-gateway_linux_${arch}" ./cmd/agent-egress-gateway
           done
           ls -lh dist/
 
@@ -43,7 +43,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum agent-gateway_linux_* > SHA256SUMS
+          sha256sum agent-egress-gateway_linux_* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Release
@@ -58,7 +58,7 @@ jobs:
         # without rewriting a finished release.
         run: |
           set -euo pipefail
-          assets="agent-gateway_linux_amd64 agent-gateway_linux_arm64 SHA256SUMS"
+          assets="agent-egress-gateway_linux_amd64 agent-egress-gateway_linux_arm64 SHA256SUMS"
 
           if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release create "$TAG" \

@@ -33,9 +33,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/github/agent-gateway/internal/ca"
-	"github.com/github/agent-gateway/internal/config"
-	"github.com/github/agent-gateway/internal/proxy"
+	"github.com/ericsciple/agent-egress-gateway/internal/ca"
+	"github.com/ericsciple/agent-egress-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/proxy"
 )
 
 func main() {

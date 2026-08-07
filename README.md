@@ -1,6 +1,6 @@
-# agent-gateway
+# agent-egress-gateway
 
-Prototype credential gateway for an isolated agent step in an Actions workflow.
+Prototype egress gateway for an isolated agent step in an Actions workflow.
 
 An agent running in a sandbox needs to call credentialed services. Handing it the
 real secret means that anything which goes wrong with the agent goes wrong with
@@ -16,7 +16,7 @@ Used by [`agent-microvm`](https://github.com/github/agent-microvm) and
 
 ## How it works
 
-The gateway runs outside the guest, on the Actions runner. Guest traffic on `:443`
+The egress gateway runs outside the guest, on the Actions runner. Guest traffic on `:443`
 is redirected into it, it terminates TLS with a CA generated per run, and it
 forwards the request to the real upstream.
 
@@ -112,7 +112,7 @@ The value is logged and never used for routing.
 
 ```sh
 go test ./...
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o agent-gateway ./cmd/agent-gateway
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o agent-egress-gateway ./cmd/agent-egress-gateway
 ```
 
 One static binary, no runtime dependencies. It replaces a mitmproxy install plus a
