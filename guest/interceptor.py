@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Guest-side interception shim for agent-sandbox.
+"""Egress interceptor: the guest-side half of the egress gateway.
 
 Runs *inside* the sandbox. An iptables rule redirects outbound :443 here, this
 terminates TLS with a CA it generates locally, and forwards the plaintext request
-over the dev tunnel to the gateway on the runner, naming the intended destination
-in X-Agent-Gateway-Host.
+over the dev tunnel to the egress gateway on the runner, naming the intended
+destination in X-Agent-Gateway-Host.
 
 What this is not
 ----------------
@@ -62,19 +62,19 @@ HOP_BY_HOP = {
 
 
 def log(msg):
-    print("[shim] %s" % msg, file=sys.stderr, flush=True)
+    print("[interceptor] %s" % msg, file=sys.stderr, flush=True)
 
 
 def preflight():
     if sys.version_info < (3, 7):
-        sys.exit("[shim] python 3.7+ required (ssl sni_callback); found %d.%d"
+        sys.exit("[interceptor] python 3.7+ required (ssl sni_callback); found %d.%d"
                  % sys.version_info[:2])
     if not TUNNEL_URL or not TUNNEL_TOKEN:
-        sys.exit("[shim] SHIM_TUNNEL_URL and SHIM_TUNNEL_TOKEN are required")
+        sys.exit("[interceptor] SHIM_TUNNEL_URL and SHIM_TUNNEL_TOKEN are required")
     try:
         subprocess.run(["openssl", "version"], check=True, capture_output=True)
     except (OSError, subprocess.CalledProcessError) as exc:
-        sys.exit("[shim] the openssl CLI is required: %s" % exc)
+        sys.exit("[interceptor] the openssl CLI is required: %s" % exc)
 
 
 class Authority:
@@ -94,7 +94,7 @@ class Authority:
             ["openssl", "req", "-x509", "-newkey", "ec",
              "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
              "-keyout", self.key, "-out", self.crt,
-             "-days", "1", "-subj", "/CN=agent-gateway guest shim"],
+             "-days", "1", "-subj", "/CN=agent egress interceptor"],
             check=True, capture_output=True)
         log("CA generated at %s" % self.crt)
 
