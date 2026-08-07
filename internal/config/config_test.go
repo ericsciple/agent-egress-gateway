@@ -46,7 +46,7 @@ func TestMatchRespectsPathPrefix(t *testing.T) {
 		{"unknown.example", "/api/0/projects/acme/", ""},
 	}
 	for _, c := range cases {
-		lanes := cfg.LanesFor(c.host, c.path)
+		lanes := cfg.LanesFor("GET", c.host, c.path)
 		got := ""
 		if len(lanes) > 0 {
 			got = lanes[0].Name
@@ -87,7 +87,7 @@ func TestGitHubAPIIsNotReserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("api.github.com should be allowed as a lane target: %v", err)
 	}
-	if len(cfg.LanesFor("api.github.com", "/repos/acme/thing")) == 0 {
+	if len(cfg.LanesFor("GET", "api.github.com", "/repos/acme/thing")) == 0 {
 		t.Error("expected the api.github.com lane to match")
 	}
 }
@@ -100,7 +100,7 @@ func TestInternalLaneMayUseReservedHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an internal lane should be allowed to use a reserved host: %v", err)
 	}
-	if len(cfg.LanesFor("api.githubcopilot.com", "/chat/completions")) == 0 {
+	if len(cfg.LanesFor("GET", "api.githubcopilot.com", "/chat/completions")) == 0 {
 		t.Error("expected the internal lane to match")
 	}
 }
@@ -127,7 +127,7 @@ func TestTwoCredentialsCanShareAnEndpoint(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	lanes := cfg.LanesFor("api.example", "/v1/things")
+	lanes := cfg.LanesFor("GET", "api.example", "/v1/things")
 	if len(lanes) != 2 {
 		t.Fatalf("got %d candidate lanes, want both", len(lanes))
 	}
@@ -156,7 +156,7 @@ func TestSelectOnlyLooksAtTheDeclaredHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	lanes := cfg.LanesFor("gitlab.com", "/api/v4/projects")
+	lanes := cfg.LanesFor("GET", "gitlab.com", "/api/v4/projects")
 
 	byName := func(want string) func(string) []string {
 		return func(name string) []string {
@@ -196,8 +196,89 @@ func TestPathPrefixMatchesOnSegmentBoundaries(t *testing.T) {
 		{"/api/0/projects/acme-staging", false},
 	}
 	for _, c := range cases {
-		if got := len(cfg.LanesFor("sentry.io", c.path)) > 0; got != c.want {
+		if got := len(cfg.LanesFor("GET", "sentry.io", c.path)) > 0; got != c.want {
 			t.Errorf("%s: reachable=%v, want %v", c.path, got, c.want)
 		}
 	}
+}
+
+// The point of methods: a credential that can read an endpoint but not write to
+// it, even though the token itself could.
+func TestMethodsScopeACredentialToReads(t *testing.T) {
+	j := `[{"name":"gh","placeholder":"P","real":"R","targets":[
+	        {"host":"api.github.com","path_prefix":"/repos/acme/widgets","methods":["GET","HEAD"]}]}]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cases := []struct {
+		method string
+		want   bool
+	}{
+		{"GET", true},
+		{"HEAD", true},
+		{"get", true}, // methods are compared case-insensitively
+		{"POST", false},
+		{"PATCH", false},
+		{"DELETE", false},
+		{"PUT", false},
+	}
+	for _, c := range cases {
+		got := len(cfg.LanesFor(c.method, "api.github.com", "/repos/acme/widgets/issues")) > 0
+		if got != c.want {
+			t.Errorf("%s: matched=%v, want %v", c.method, got, c.want)
+		}
+	}
+}
+
+func TestNoMethodsMeansAnyMethod(t *testing.T) {
+	j := `[{"name":"gh","placeholder":"P","real":"R","targets":[{"host":"api.github.com"}]}]`
+	cfg, _ := Load(j, "")
+	for _, m := range []string{"GET", "POST", "DELETE", "PATCH"} {
+		if len(cfg.LanesFor(m, "api.github.com", "/anything")) == 0 {
+			t.Errorf("%s should match when no methods are listed", m)
+		}
+	}
+}
+
+// Two credentials on one endpoint, split by method: a read token for GET and a
+// write token for everything else.
+func TestReadAndWriteCredentialsOnOneEndpoint(t *testing.T) {
+	j := `[
+	  {"name":"read","placeholder":"PH_R","real":"REAL-R","targets":[
+	    {"host":"api.example","path_prefix":"/v1","methods":["GET"]}]},
+	  {"name":"write","placeholder":"PH_W","real":"REAL-W","targets":[
+	    {"host":"api.example","path_prefix":"/v1","methods":["POST","PATCH"]}]}
+	]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	get := cfg.LanesFor("GET", "api.example", "/v1/things")
+	if len(get) != 1 || get[0].Name != "read" {
+		t.Errorf("GET selected %v, want only the read lane", names(get))
+	}
+	post := cfg.LanesFor("POST", "api.example", "/v1/things")
+	if len(post) != 1 || post[0].Name != "write" {
+		t.Errorf("POST selected %v, want only the write lane", names(post))
+	}
+	if got := cfg.LanesFor("DELETE", "api.example", "/v1/things"); len(got) != 0 {
+		t.Errorf("DELETE selected %v, want nothing", names(got))
+	}
+}
+
+func TestEmptyMethodIsRejected(t *testing.T) {
+	j := `[{"name":"gh","placeholder":"P","real":"R","targets":[
+	        {"host":"api.github.com","methods":["GET",""]}]}]`
+	if _, err := Load(j, ""); err == nil {
+		t.Error("an empty method string should be rejected")
+	}
+}
+
+func names(lanes []*Lane) []string {
+	var out []string
+	for _, l := range lanes {
+		out = append(out, l.Name)
+	}
+	return out
 }

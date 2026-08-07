@@ -17,6 +17,23 @@ import (
 type Target struct {
 	Host       string `json:"host"`
 	PathPrefix string `json:"path_prefix,omitempty"`
+	// Methods restricts the target to these HTTP methods. Empty means any, which
+	// is what an author gets by not thinking about it. Listing only GET and HEAD
+	// is how a credential is scoped to reads.
+	Methods []string `json:"methods,omitempty"`
+}
+
+// allowsMethod reports whether this target covers the given method.
+func (t Target) allowsMethod(method string) bool {
+	if len(t.Methods) == 0 {
+		return true
+	}
+	for _, m := range t.Methods {
+		if strings.EqualFold(m, method) {
+			return true
+		}
+	}
+	return false
 }
 
 // Lane binds a placeholder to a real credential for a fixed set of targets.
@@ -45,17 +62,21 @@ func (l Lane) HeaderName() string {
 	return strings.ToLower(l.Header)
 }
 
-// Matches reports whether host and path fall within this lane's targets.
+// Matches reports whether a request falls within this lane's targets.
 //
-// Host comparison is case-insensitive because DNS names are. Path comparison is
-// a prefix with no globbing, deliberately, and it only matches on a path segment
-// boundary: /projects/acme covers /projects/acme and /projects/acme/issues, but
-// not /projects/acmeEVIL. A raw string prefix would quietly grant a wider scope
-// than the author wrote, and the difference is one character they cannot see.
-func (l Lane) Matches(host, path string) bool {
+// Host comparison is case-insensitive because DNS names are, and so is method
+// comparison. Path comparison is a prefix with no globbing, deliberately, and it
+// only matches on a path segment boundary: /projects/acme covers /projects/acme
+// and /projects/acme/issues, but not /projects/acmeEVIL. A raw string prefix
+// would quietly grant a wider scope than the author wrote, and the difference is
+// one character they cannot see.
+func (l Lane) Matches(method, host, path string) bool {
 	host = strings.ToLower(host)
 	for _, t := range l.Targets {
 		if strings.ToLower(t.Host) != host {
+			continue
+		}
+		if !t.allowsMethod(method) {
 			continue
 		}
 		if t.PathPrefix == "" {
@@ -152,6 +173,11 @@ func Load(lanesJSON, egressAllow string) (*Config, error) {
 			if t.PathPrefix != "" && !strings.HasPrefix(t.PathPrefix, "/") {
 				return nil, fmt.Errorf("lane %q target %d: path_prefix must start with /", l.Name, j)
 			}
+			for k, m := range t.Methods {
+				if strings.TrimSpace(m) == "" {
+					return nil, fmt.Errorf("lane %q target %d: method %d is empty", l.Name, j, k)
+				}
+			}
 		}
 	}
 
@@ -174,10 +200,10 @@ func Load(lanesJSON, egressAllow string) (*Config, error) {
 //
 // Callers must pass the host they intend to connect to, never a value taken from
 // a request header. See proxy.handle.
-func (c *Config) LanesFor(host, path string) []*Lane {
+func (c *Config) LanesFor(method, host, path string) []*Lane {
 	var out []*Lane
 	for i := range c.Lanes {
-		if c.Lanes[i].Matches(host, path) {
+		if c.Lanes[i].Matches(method, host, path) {
 			out = append(out, &c.Lanes[i])
 		}
 	}

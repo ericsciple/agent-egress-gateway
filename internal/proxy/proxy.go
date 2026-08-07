@@ -125,10 +125,10 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 			return
 		}
 
-		// Host and path decide which credentials are permitted here; the
+		// Method, host and path decide which credentials are permitted here; the
 		// placeholder decides which of them the caller actually asked for. Both
 		// matter: two credentials may share an endpoint.
-		lanes := p.cfg.LanesFor(host, req.URL.Path)
+		lanes := p.cfg.LanesFor(req.Method, host, req.URL.Path)
 		lane := config.Select(lanes, func(name string) []string {
 			return req.Header.Values(textproto.CanonicalMIMEHeaderKey(name))
 		})

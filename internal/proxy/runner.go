@@ -78,10 +78,10 @@ func (p *Proxy) RunnerHandler() http.Handler {
 			host = h
 		}
 
-		// Host and path decide which credentials are permitted here; the
+		// Method, host and path decide which credentials are permitted here; the
 		// placeholder decides which of them the caller actually asked for. Both
 		// matter: two credentials may share an endpoint.
-		lanes := p.cfg.LanesFor(host, r.URL.Path)
+		lanes := p.cfg.LanesFor(r.Method, host, r.URL.Path)
 		lane := config.Select(lanes, func(name string) []string {
 			return r.Header.Values(textproto.CanonicalMIMEHeaderKey(name))
 		})

@@ -34,7 +34,7 @@ that swap is allowed:
     "name": "sentry",
     "placeholder": "<random, generated per run>",
     "real": "<the real token>",
-    "targets": [{ "host": "sentry.io", "path_prefix": "/api/0/projects/acme/" }]
+    "targets": [{ "host": "sentry.io", "path_prefix": "/api/0/projects/acme/", "methods": ["GET"] }]
   },
   {
     "name": "gitlab",
@@ -61,6 +61,11 @@ authorised for and have the real credential delivered somewhere else.
 header, defaulting to `Authorization`. Never another header, never the body.
 Swapping more widely would let a caller put the placeholder in a field the upstream
 stores, have the real credential substituted into it, and read it back out.
+
+**A target can be narrowed to particular methods.** `"methods": ["GET", "HEAD"]` scopes a credential to
+reads, so a token that could write is only ever attached to a request that cannot. Omit it and any method
+matches. Two credentials can then split one endpoint by method: a read token for `GET` and a write token
+for `POST`.
 
 **The substitution preserves what the caller sent.** `Bearer <placeholder>` becomes
 `Bearer <credential>`; a bare placeholder becomes a bare credential. The gateway

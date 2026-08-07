@@ -47,7 +47,11 @@ func newRunner(t *testing.T, egressAllow string) (http.Handler, *recordingTransp
 }
 
 func doRunner(h http.Handler, host, path string, headers map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("GET", path, nil)
+	return doRunnerMethod(h, "GET", host, path, headers)
+}
+
+func doRunnerMethod(h http.Handler, method, host, path string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
 	if host != "" {
 		req.Header.Set(HostHeader, host)
 	}
@@ -233,6 +237,56 @@ func TestNoPlaceholderAmongSeveralLanesAttachesNothing(t *testing.T) {
 		for _, s := range vs {
 			if strings.Contains(s, "REAL-") {
 				t.Error("a credential was attached to a request that asked for none")
+			}
+		}
+	}
+}
+
+// A credential scoped to reads must not be attached to a write, even on the very
+// path it covers. The token itself can write; the gateway is what stops it.
+func TestRunnerMethodScoping(t *testing.T) {
+	readOnly := `[{"name":"GH_TOKEN","placeholder":"PH_GH","real":"REAL-GH-TOKEN","targets":[
+	               {"host":"api.github.com","path_prefix":"/repos/acme/widgets","methods":["GET","HEAD"]}]}]`
+	cfg, err := config.Load(readOnly, "")
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	authority, err := ca.New()
+	if err != nil {
+		t.Fatalf("ca.New: %v", err)
+	}
+
+	run := func(method string) (*httptest.ResponseRecorder, *recordingTransport) {
+		rt := &recordingTransport{}
+		p := New(cfg, authority)
+		p.Log = func(string) {}
+		p.Transport = rt
+		rec := doRunnerMethod(p.RunnerHandler(), method, "api.github.com", "/repos/acme/widgets/issues",
+			map[string]string{"Authorization": "Bearer PH_GH"})
+		return rec, rt
+	}
+
+	rec, rt := run("GET")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", rec.Code)
+	}
+	if got := rt.lastHeader.Get("Authorization"); got != "Bearer REAL-GH-TOKEN" {
+		t.Errorf("GET Authorization = %q, want the real credential", got)
+	}
+
+	rec, rt = run("DELETE")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("DELETE status = %d, want 403", rec.Code)
+	}
+	if len(rt.dialedHosts) != 0 {
+		t.Errorf("DELETE still dialled upstream: %v", rt.dialedHosts)
+	}
+	if rt.lastHeader != nil {
+		for _, vs := range rt.lastHeader {
+			for _, v := range vs {
+				if strings.Contains(v, "REAL-GH-TOKEN") {
+					t.Fatal("CREDENTIAL LEAK: the credential was attached to a method outside its scope")
+				}
 			}
 		}
 	}
