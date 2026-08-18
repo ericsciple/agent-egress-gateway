@@ -173,6 +173,33 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 			writeError(tlsConn, http.StatusBadGateway, "upstream read failed")
 			return
 		}
+
+		// A protocol upgrade ends the HTTP conversation: after 101 the bytes on
+		// this connection are no longer requests and responses, and both sides may
+		// speak at once.
+		//
+		// Relaying it as though it were an ordinary response deadlocks. resp.Write
+		// blocks copying upstream->client for as long as the peer holds the stream
+		// open, so nothing ever reads client->upstream, and a client waiting for a
+		// reply to a frame it has already sent waits forever. That is a hang with
+		// no error anywhere, which is exactly how it presented: a run that sat
+		// silent until its timeout.
+		//
+		// Handing the connection over is safe here because the decision has already
+		// been made: this socket is pinned to the host we matched, the credential
+		// swap has happened on the upgrade request itself, and what follows carries
+		// no paths or methods left to authorise.
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			p.Log(fmt.Sprintf("%s %s%s upgraded to %s", req.Method, host, req.URL.Path, resp.Header.Get("Upgrade")))
+			if err := writeHead(tlsConn, resp); err != nil {
+				return
+			}
+			// Both buffered readers may already hold bytes that arrived with the
+			// head; copying from the raw sockets instead would silently drop them.
+			relay(tlsConn, reader, upstream, upstreamReader)
+			return
+		}
+
 		if err := resp.Write(tlsConn); err != nil {
 			resp.Body.Close()
 			return
@@ -226,4 +253,32 @@ func writeError(w io.Writer, status int, msg string) {
 	body := fmt.Sprintf("{\"error\":%q}\n", msg)
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		status, http.StatusText(status), len(body), body)
+}
+
+// writeHead writes a response's status line and headers, and nothing else.
+//
+// Used for an upgrade, where there is no body to write and the connection is about
+// to stop being HTTP. resp.Write cannot be used: it would try to relay a body that
+// never ends.
+func writeHead(w io.Writer, resp *http.Response) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "HTTP/%d.%d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.Status)
+	if err := resp.Header.Write(&b); err != nil {
+		return err
+	}
+	b.WriteString("\r\n")
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// relay copies bytes in both directions until either side finishes.
+//
+// Returning as soon as ONE direction ends is deliberate: the caller closes both
+// connections on return, which unblocks the other copy. Waiting for both would
+// leave a half-closed stream holding the connection open until the run timed out.
+func relay(client io.Writer, clientSrc io.Reader, upstream io.Writer, upstreamSrc io.Reader) {
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(upstream, clientSrc); done <- struct{}{} }()
+	go func() { io.Copy(client, upstreamSrc); done <- struct{}{} }()
+	<-done
 }
