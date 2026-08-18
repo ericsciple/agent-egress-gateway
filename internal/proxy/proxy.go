@@ -192,6 +192,9 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 // would create an exfiltration path: a caller could put the placeholder in a
 // field the upstream persists, have the real credential substituted into it, and
 // read it back out.
+//
+// A Basic credential is decoded, substituted and re-encoded, since the placeholder
+// sits inside base64 there rather than in the header value itself.
 func swap(h http.Header, lane *config.Lane) bool {
 	name := textproto.CanonicalMIMEHeaderKey(lane.HeaderName())
 	values, ok := h[name]
@@ -200,8 +203,8 @@ func swap(h http.Header, lane *config.Lane) bool {
 	}
 	swapped := false
 	for i, v := range values {
-		if strings.Contains(v, lane.Placeholder) {
-			values[i] = strings.ReplaceAll(v, lane.Placeholder, lane.Real)
+		if replaced, did := config.SwapValue(v, lane.Placeholder, lane.Real); did {
+			values[i] = replaced
 			swapped = true
 		}
 	}

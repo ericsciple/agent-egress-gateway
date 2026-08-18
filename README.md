@@ -62,6 +62,15 @@ header, defaulting to `Authorization`. Never another header, never the body.
 Swapping more widely would let a caller put the placeholder in a field the upstream
 stores, have the real credential substituted into it, and read it back out.
 
+**HTTP Basic credentials are decoded first.** `Basic` carries `base64(user:password)`,
+so a placeholder sitting in either field never appears in the header value itself.
+Those values are decoded, substituted and re-encoded, which is what makes `curl -u`,
+git over HTTPS and the many SDKs that use Basic work unchanged. This applies to the
+same single declared header as any other swap — it widens what we can *read* inside
+that one value, not where we write. A Basic value that does not carry the lane's
+placeholder is passed through byte for byte, and a payload that is not valid UTF-8 is
+left alone rather than decoded, since substituting inside binary would corrupt it.
+
 **A target can be narrowed to particular methods.** `"methods": ["GET", "HEAD"]` scopes a credential to
 reads, so a token that could write is only ever attached to a request that cannot. Omit it and any method
 matches. Two credentials can then split one endpoint by method: a read token for `GET` and a write token

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -315,5 +316,49 @@ func TestNoPlaceholderMeansNoCredential(t *testing.T) {
 	}
 	if strings.Contains(cap.lastRawBytes, "REAL-SENTRY-SECRET") {
 		t.Error("a credential was attached to a request that did not ask for one")
+	}
+}
+
+func TestBasicCredentialIsDecodedSwappedAndReEncoded(t *testing.T) {
+	// The end-to-end shape of `curl -u user:$TOKEN`: the placeholder is inside
+	// base64, so nothing about it is visible in the header value itself. What
+	// matters is what the UPSTREAM receives.
+	p, clientTLS, cap := newHarness(t, "")
+	creds := base64.StdEncoding.EncodeToString([]byte("user:PLACEHOLDER_SENTRY_XYZ"))
+	resp := roundTrip(t, p, clientTLS, "sentry.io", "", "/api/0/projects/acme/issues",
+		map[string]string{"Authorization": "Basic " + creds})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	got := cap.lastRequest.Header.Get("Authorization")
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(got, "Basic "))
+	if err != nil {
+		t.Fatalf("upstream Authorization was not valid Basic: %q", got)
+	}
+	if string(raw) != "user:REAL-SENTRY-SECRET" {
+		t.Errorf("upstream credential = %q, want the real secret in the password field", raw)
+	}
+	if strings.Contains(got, "PLACEHOLDER_SENTRY_XYZ") {
+		t.Error("placeholder still present upstream")
+	}
+}
+
+func TestBasicCredentialOutsideItsLaneIsNotSwapped(t *testing.T) {
+	// Base64 must not become a way around lane scoping: the same credential on a
+	// host the lane does not cover still gets nothing.
+	p, clientTLS, cap := newHarness(t, "registry.npmjs.org")
+	creds := base64.StdEncoding.EncodeToString([]byte("user:PLACEHOLDER_SENTRY_XYZ"))
+	resp := roundTrip(t, p, clientTLS, "registry.npmjs.org", "", "/left-pad",
+		map[string]string{"Authorization": "Basic " + creds})
+	defer resp.Body.Close()
+
+	got := cap.lastRequest.Header.Get("Authorization")
+	if strings.Contains(got, "REAL-SENTRY-SECRET") {
+		t.Fatal("the real credential was attached on a host outside the lane")
+	}
+	if got != "Basic "+creds {
+		t.Errorf("value was rewritten to %q; it should pass through untouched", got)
 	}
 }

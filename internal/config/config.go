@@ -217,10 +217,14 @@ func (c *Config) LanesFor(method, host, path string) []*Lane {
 // nil when the destination is authorised but no credential was requested, which
 // leaves the request unauthenticated rather than attaching one it did not ask
 // for.
+//
+// The placeholder counts as present when it is carried inside a Basic credential
+// too. Selection and substitution have to agree on that: if only the swap decoded
+// Basic, no lane would ever be selected for one and the swap would never run.
 func Select(lanes []*Lane, header func(name string) []string) *Lane {
 	for _, l := range lanes {
 		for _, v := range header(l.HeaderName()) {
-			if strings.Contains(v, l.Placeholder) {
+			if headerCarries(v, l.Placeholder) {
 				return l
 			}
 		}
