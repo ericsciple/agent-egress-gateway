@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 const twoLanes = `[
   {"name":"sentry","placeholder":"PH_SENTRY","real":"real-sentry",
@@ -75,6 +78,57 @@ func TestLoadRejectsBadConfig(t *testing.T) {
 	for _, c := range cases {
 		if _, err := Load(c.json, ""); err == nil {
 			t.Errorf("%s: expected an error, got none", c.name)
+		}
+	}
+}
+
+func TestLoadNormalizesOnlyPercentEscapeCaseInPathPrefix(t *testing.T) {
+	j := `[{"name":"a","placeholder":"P","real":"R",
+	       "targets":[{"host":"h.example","path_prefix":"/api/projects/group%2fproject/"}]}]`
+	cfg, err := Load(j, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Lanes[0].Targets[0].PathPrefix; got != "/api/projects/group%2Fproject/" {
+		t.Fatalf("matching path_prefix = %q", got)
+	}
+}
+
+func TestLoadRejectsTraversalPathPrefixes(t *testing.T) {
+	for _, prefix := range []string{
+		"/api/%zz",
+		"/api/../admin",
+		"/api/%2e%2e/admin",
+		"/api%2f..%2fadmin",
+		`/api\..\admin`,
+		"/api/%252e%252e/admin",
+		"/api/%25252e%25252e/admin",
+		"/api/%25%32%45%25%32%45/admin",
+		"/api/..;param/admin",
+		"/api/..%3bparam/admin",
+	} {
+		t.Run(prefix, func(t *testing.T) {
+			j := `[{"name":"a","placeholder":"P","real":"R",
+			       "targets":[{"host":"h.example","path_prefix":` + fmt.Sprintf("%q", prefix) + `}]}]`
+			if _, err := Load(j, ""); err == nil {
+				t.Fatal("expected an invalid path_prefix error")
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsEncodedIdentifiersDotsAndRepeatedSeparators(t *testing.T) {
+	for _, prefix := range []string{
+		"/api/projects/group%2Fproject/",
+		"/packages/@types%2Fnode/",
+		"/files/report%2Etxt/",
+		"/api//version/",
+		"/api/./version/",
+	} {
+		j := `[{"name":"a","placeholder":"P","real":"R",
+		       "targets":[{"host":"h.example","path_prefix":` + fmt.Sprintf("%q", prefix) + `}]}]`
+		if _, err := Load(j, ""); err != nil {
+			t.Errorf("%q: unexpected error: %v", prefix, err)
 		}
 	}
 }

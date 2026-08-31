@@ -27,6 +27,7 @@ import (
 
 	"github.com/ericsciple/agent-egress-gateway/internal/ca"
 	"github.com/ericsciple/agent-egress-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/pathpolicy"
 )
 
 // DialFunc opens a connection to an upstream host. Injected so tests can avoid
@@ -125,25 +126,34 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 			return
 		}
 
+		requestPath, err := pathpolicy.FromURL(req.URL, req.RequestURI)
+		if err != nil {
+			p.Log(fmt.Sprintf("%s %s%s rejected: %v", req.Method, host, requestPathForLog(req.RequestURI), err))
+			writeError(tlsConn, http.StatusBadRequest, "request path rejected: "+err.Error())
+			return
+		}
+
+		requestPath.Apply(req.URL)
+
 		// Method, host and path decide which credentials are permitted here; the
 		// placeholder decides which of them the caller actually asked for. Both
 		// matter: two credentials may share an endpoint.
-		lanes := p.cfg.LanesFor(req.Method, host, req.URL.Path)
+		lanes := p.cfg.LanesFor(req.Method, host, requestPath.Match)
 		lane := config.Select(lanes, func(name string) []string {
 			return req.Header.Values(textproto.CanonicalMIMEHeaderKey(name))
 		})
 		switch {
 		case lane != nil:
 			swap(req.Header, lane)
-			p.Log(fmt.Sprintf("%s %s%s lane=%s swapped", req.Method, host, req.URL.Path, lane.Name))
+			p.Log(fmt.Sprintf("%s %s%s lane=%s swapped", req.Method, host, requestPath.Raw, lane.Name))
 		case len(lanes) > 0:
 			// The destination is authorised but the caller did not ask for a
 			// credential, so the request goes on unauthenticated.
-			p.Log(fmt.Sprintf("%s %s%s allowed, no placeholder presented", req.Method, host, req.URL.Path))
+			p.Log(fmt.Sprintf("%s %s%s allowed, no placeholder presented", req.Method, host, requestPath.Raw))
 		case p.cfg.AllowsEgress(host):
-			p.Log(fmt.Sprintf("%s %s%s allowed, no credential", req.Method, host, req.URL.Path))
+			p.Log(fmt.Sprintf("%s %s%s allowed, no credential", req.Method, host, requestPath.Raw))
 		default:
-			p.Log(fmt.Sprintf("%s %s%s blocked", req.Method, host, req.URL.Path))
+			p.Log(fmt.Sprintf("%s %s%s blocked", req.Method, host, requestPath.Raw))
 			writeError(tlsConn, http.StatusForbidden, "destination not allowed")
 			return
 		}
@@ -190,7 +200,7 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 		// swap has happened on the upgrade request itself, and what follows carries
 		// no paths or methods left to authorise.
 		if resp.StatusCode == http.StatusSwitchingProtocols {
-			p.Log(fmt.Sprintf("%s %s%s upgraded to %s", req.Method, host, req.URL.Path, resp.Header.Get("Upgrade")))
+			p.Log(fmt.Sprintf("%s %s%s upgraded to %s", req.Method, host, requestPath.Raw, resp.Header.Get("Upgrade")))
 			if err := writeHead(tlsConn, resp); err != nil {
 				return
 			}
@@ -210,6 +220,18 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 			return
 		}
 	}
+}
+
+func requestPathForLog(requestURI string) string {
+	path := requestURI
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	const max = 512
+	if len(path) > max {
+		return path[:max] + "...(truncated)"
+	}
+	return path
 }
 
 // swap replaces the lane's placeholder with its real credential, in that lane's

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/ericsciple/agent-egress-gateway/internal/pathpolicy"
 )
 
 // Target is one place a lane's credential may be used.
@@ -172,6 +174,13 @@ func Load(lanesJSON, egressAllow string) (*Config, error) {
 			}
 			if t.PathPrefix != "" && !strings.HasPrefix(t.PathPrefix, "/") {
 				return nil, fmt.Errorf("lane %q target %d: path_prefix must start with /", l.Name, j)
+			}
+			if t.PathPrefix != "" {
+				canonical, err := pathpolicy.Parse(t.PathPrefix)
+				if err != nil {
+					return nil, fmt.Errorf("lane %q target %d: invalid path_prefix: %w", l.Name, j, err)
+				}
+				cfg.Lanes[i].Targets[j].PathPrefix = canonical.Match
 			}
 			for k, m := range t.Methods {
 				if strings.TrimSpace(m) == "" {
