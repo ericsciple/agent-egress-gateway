@@ -121,6 +121,10 @@ func newHarnessWithLanes(t *testing.T, lanes, egressAllow string) (*Proxy, *tls.
 // roundTrip drives one request through the proxy. sni is the TLS server name the
 // client presents; hostHeader overrides the Host header when non-empty.
 func roundTrip(t *testing.T, p *Proxy, clientTLS *tls.Config, sni, hostHeader, path string, headers map[string]string) *http.Response {
+	return roundTripMethod(t, p, clientTLS, http.MethodGet, sni, hostHeader, path, headers)
+}
+
+func roundTripMethod(t *testing.T, p *Proxy, clientTLS *tls.Config, method, sni, hostHeader, path string, headers map[string]string) *http.Response {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -154,7 +158,7 @@ func roundTrip(t *testing.T, p *Proxy, clientTLS *tls.Config, sni, hostHeader, p
 		host = hostHeader
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "GET %s HTTP/1.1\r\nHost: %s\r\n", path, host)
+	fmt.Fprintf(&sb, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host)
 	for k, v := range headers {
 		fmt.Fprintf(&sb, "%s: %s\r\n", k, v)
 	}
@@ -170,6 +174,50 @@ func roundTrip(t *testing.T, p *Proxy, clientTLS *tls.Config, sni, hostHeader, p
 	// Drain so the capture goroutine has certainly recorded the request.
 	io.Copy(io.Discard, resp.Body)
 	return resp
+}
+
+func TestInterceptRejectsTraceBeforeSelectionSwapOrDial(t *testing.T) {
+	cases := []struct {
+		name, lanes, egressAllow, host string
+		headers                        map[string]string
+	}{
+		{
+			name:    "customer credential lane",
+			lanes:   lanesJSON,
+			host:    "sentry.io",
+			headers: map[string]string{"Authorization": "******"},
+		},
+		{
+			name: "internal credential lane",
+			lanes: `[{"name":"inference","internal":true,"placeholder":"PH","real":"REAL-INTERNAL",
+			         "targets":[{"host":"api.githubcopilot.com"}]}]`,
+			host:    "api.githubcopilot.com",
+			headers: map[string]string{"Authorization": "PH"},
+		},
+		{
+			name:        "uncredentialed egress",
+			lanes:       `[]`,
+			egressAllow: "cdn.example",
+			host:        "cdn.example",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, clientTLS, cap := newHarnessWithLanes(t, c.lanes, c.egressAllow)
+			resp := roundTripMethod(t, p, clientTLS, "TrAcE", c.host, "", "/echo", c.headers)
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", resp.StatusCode)
+			}
+			if got := cap.dialed(); len(got) != 0 {
+				t.Fatalf("TRACE dialled upstream: %v", got)
+			}
+			if strings.Contains(cap.lastRawBytes, "REAL-") {
+				t.Fatal("TRACE caused a real credential to be substituted")
+			}
+		})
+	}
 }
 
 func TestSwapHappensOnMatchingLane(t *testing.T) {

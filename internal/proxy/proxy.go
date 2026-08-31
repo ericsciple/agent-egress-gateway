@@ -116,6 +116,12 @@ func (p *Proxy) Serve(client net.Conn, originalDst string) {
 			return
 		}
 
+		if !config.MethodSupported(req.Method) {
+			p.Log(fmt.Sprintf("%s %s rejected: unsupported method", req.Method, host))
+			writeError(tlsConn, http.StatusMethodNotAllowed, "TRACE is not supported")
+			return
+		}
+
 		// A request whose Host header disagrees with the TLS name it arrived
 		// under is refused rather than reconciled. Allowing the two to differ is
 		// exactly how a lane could be matched on one host while the connection

@@ -118,6 +118,49 @@ func TestRunnerBlocksUnknownHost(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsTraceBeforeSelectionSwapOrDial(t *testing.T) {
+	cases := []struct {
+		name, lanes, egressAllow, host string
+		headers                        map[string]string
+	}{
+		{
+			name:    "customer credential lane",
+			lanes:   lanesJSON,
+			host:    "sentry.io",
+			headers: map[string]string{"Authorization": "******"},
+		},
+		{
+			name: "internal credential lane",
+			lanes: `[{"name":"inference","internal":true,"placeholder":"PH","real":"REAL-INTERNAL",
+			         "targets":[{"host":"api.githubcopilot.com"}]}]`,
+			host:    "api.githubcopilot.com",
+			headers: map[string]string{"Authorization": "PH"},
+		},
+		{
+			name:        "uncredentialed egress",
+			lanes:       `[]`,
+			egressAllow: "cdn.example",
+			host:        "cdn.example",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, rt := newRunnerWithLanes(t, c.lanes, c.egressAllow)
+			rec := doRunnerMethod(h, "tRaCe", c.host, "/echo", c.headers)
+
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 405", rec.Code)
+			}
+			if len(rt.dialedHosts) != 0 {
+				t.Fatalf("TRACE dialled upstream: %v", rt.dialedHosts)
+			}
+			if rt.lastHeader != nil {
+				t.Fatal("TRACE reached the upstream transport")
+			}
+		})
+	}
+}
+
 func TestRunnerBlocksPathOutsidePrefix(t *testing.T) {
 	h, rt := newRunner(t, "")
 	rec := doRunner(h, "sentry.io", "/api/0/projects/someone-else/x",

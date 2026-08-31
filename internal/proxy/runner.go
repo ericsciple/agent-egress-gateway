@@ -79,6 +79,12 @@ func (p *Proxy) RunnerHandler() http.Handler {
 			host = h
 		}
 
+		if !config.MethodSupported(r.Method) {
+			p.Log(r.Method + " " + host + " rejected: unsupported method")
+			http.Error(w, "TRACE is not supported", http.StatusMethodNotAllowed)
+			return
+		}
+
 		requestPath, err := pathpolicy.FromURL(r.URL, r.RequestURI)
 		if err != nil {
 			p.Log(r.Method + " " + host + requestPathForLog(r.RequestURI) + " rejected: " + err.Error())

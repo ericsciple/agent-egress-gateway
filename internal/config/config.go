@@ -13,6 +13,8 @@ import (
 	"github.com/ericsciple/agent-egress-gateway/internal/pathpolicy"
 )
 
+const unsupportedTraceMethod = "TRACE"
+
 // Target is one place a lane's credential may be used.
 //
 // PathPrefix is optional. Empty means any path on that host.
@@ -27,6 +29,9 @@ type Target struct {
 
 // allowsMethod reports whether this target covers the given method.
 func (t Target) allowsMethod(method string) bool {
+	if !MethodSupported(method) {
+		return false
+	}
 	if len(t.Methods) == 0 {
 		return true
 	}
@@ -36,6 +41,13 @@ func (t Target) allowsMethod(method string) bool {
 		}
 	}
 	return false
+}
+
+// MethodSupported reports whether the gateway can forward method at all.
+// TRACE is intentionally unsupported because its defined purpose is to reflect
+// the received request, which is incompatible with injecting a real credential.
+func MethodSupported(method string) bool {
+	return !strings.EqualFold(strings.TrimSpace(method), unsupportedTraceMethod)
 }
 
 // Lane binds a placeholder to a real credential for a fixed set of targets.
@@ -185,6 +197,9 @@ func Load(lanesJSON, egressAllow string) (*Config, error) {
 			for k, m := range t.Methods {
 				if strings.TrimSpace(m) == "" {
 					return nil, fmt.Errorf("lane %q target %d: method %d is empty", l.Name, j, k)
+				}
+				if !MethodSupported(m) {
+					return nil, fmt.Errorf("lane %q target %d: TRACE is not a supported method", l.Name, j)
 				}
 			}
 		}

@@ -285,12 +285,17 @@ func TestMethodsScopeACredentialToReads(t *testing.T) {
 	}
 }
 
-func TestNoMethodsMeansAnyMethod(t *testing.T) {
+func TestNoMethodsMeansAnySupportedMethod(t *testing.T) {
 	j := `[{"name":"gh","placeholder":"P","real":"R","targets":[{"host":"api.github.com"}]}]`
 	cfg, _ := Load(j, "")
-	for _, m := range []string{"GET", "POST", "DELETE", "PATCH"} {
+	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
 		if len(cfg.LanesFor(m, "api.github.com", "/anything")) == 0 {
 			t.Errorf("%s should match when no methods are listed", m)
+		}
+	}
+	for _, m := range []string{"TRACE", "trace", "TrAcE"} {
+		if len(cfg.LanesFor(m, "api.github.com", "/anything")) != 0 {
+			t.Errorf("%s must remain unsupported when no methods are listed", m)
 		}
 	}
 }
@@ -326,6 +331,16 @@ func TestEmptyMethodIsRejected(t *testing.T) {
 	        {"host":"api.github.com","methods":["GET",""]}]}]`
 	if _, err := Load(j, ""); err == nil {
 		t.Error("an empty method string should be rejected")
+	}
+}
+
+func TestExplicitTraceMethodIsRejected(t *testing.T) {
+	for _, method := range []string{"TRACE", "trace", "TrAcE"} {
+		j := `[{"name":"gh","placeholder":"P","real":"R","targets":[
+		        {"host":"api.github.com","methods":["GET",` + fmt.Sprintf("%q", method) + `]}]}]`
+		if _, err := Load(j, ""); err == nil {
+			t.Errorf("%s: expected TRACE to be rejected", method)
+		}
 	}
 }
 
