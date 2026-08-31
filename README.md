@@ -73,8 +73,11 @@ left alone rather than decoded, since substituting inside binary would corrupt i
 
 **A target can be narrowed to particular methods.** `"methods": ["GET", "HEAD"]` scopes a credential to
 reads, so a token that could write is only ever attached to a request that cannot. Omit it and any method
-matches. Two credentials can then split one endpoint by method: a read token for `GET` and a write token
-for `POST`.
+except `TRACE` matches. `TRACE` is unsupported gateway-wide because its defined
+purpose is to reflect the received request, which could return an injected
+credential to the caller. Listing `TRACE` explicitly is a startup error. Two
+credentials can split one endpoint by method: a read token for `GET` and a
+write token for `POST`.
 
 **Path authorization and forwarding use the same escaped representation.** The
 gateway preserves and forwards the escaped path exactly as the client sent it.
