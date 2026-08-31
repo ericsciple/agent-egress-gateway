@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ericsciple/agent-egress-gateway/internal/config"
+	"github.com/ericsciple/agent-egress-gateway/internal/pathpolicy"
 )
 
 // HostHeader carries the destination the guest was trying to reach.
@@ -78,34 +79,44 @@ func (p *Proxy) RunnerHandler() http.Handler {
 			host = h
 		}
 
+		requestPath, err := pathpolicy.FromURL(r.URL, r.RequestURI)
+		if err != nil {
+			p.Log(r.Method + " " + host + requestPathForLog(r.RequestURI) + " rejected: " + err.Error())
+			http.Error(w, "request path rejected: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		requestPath.Apply(r.URL)
+
 		// Method, host and path decide which credentials are permitted here; the
 		// placeholder decides which of them the caller actually asked for. Both
 		// matter: two credentials may share an endpoint.
-		lanes := p.cfg.LanesFor(r.Method, host, r.URL.Path)
+		lanes := p.cfg.LanesFor(r.Method, host, requestPath.Match)
 		lane := config.Select(lanes, func(name string) []string {
 			return r.Header.Values(textproto.CanonicalMIMEHeaderKey(name))
 		})
 		switch {
 		case lane != nil:
 			swap(r.Header, lane)
-			p.Log(r.Method + " " + host + r.URL.Path + " lane=" + lane.Name + " swapped")
+			p.Log(r.Method + " " + host + requestPath.Raw + " lane=" + lane.Name + " swapped")
 		case len(lanes) > 0:
-			p.Log(r.Method + " " + host + r.URL.Path + " allowed, no placeholder presented")
+			p.Log(r.Method + " " + host + requestPath.Raw + " allowed, no placeholder presented")
 		case p.cfg.AllowsEgress(host):
-			p.Log(r.Method + " " + host + r.URL.Path + " allowed, no credential")
+			p.Log(r.Method + " " + host + requestPath.Raw + " allowed, no credential")
 		default:
-			p.Log(r.Method + " " + host + r.URL.Path + " blocked")
+			p.Log(r.Method + " " + host + requestPath.Raw + " blocked")
 			http.Error(w, "destination not allowed", http.StatusForbidden)
 			return
 		}
 
 		// The one place an upstream is chosen, and it is the host we matched on.
-		outReq, err := http.NewRequestWithContext(r.Context(), r.Method,
-			"https://"+host+r.URL.RequestURI(), r.Body)
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, "https://"+host, r.Body)
 		if err != nil {
 			http.Error(w, "building upstream request", http.StatusInternalServerError)
 			return
 		}
+		requestPath.Apply(outReq.URL)
+		outReq.URL.RawQuery = r.URL.RawQuery
+		outReq.URL.ForceQuery = r.URL.ForceQuery
 		for k, vs := range r.Header {
 			if stripFromGuest[strings.ToLower(k)] || strings.EqualFold(k, HostHeader) {
 				continue

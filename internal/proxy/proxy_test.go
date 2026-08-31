@@ -40,12 +40,25 @@ func (c *capture) dialed() []string {
 	return append([]string(nil), c.dialedHosts...)
 }
 
+func (c *capture) requestURI() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastRequest == nil {
+		return ""
+	}
+	return c.lastRequest.RequestURI
+}
+
 // newHarness returns a proxy whose upstream is an in-memory pipe, plus a client
 // TLS config that trusts the generated CA.
 func newHarness(t *testing.T, egressAllow string) (*Proxy, *tls.Config, *capture) {
+	return newHarnessWithLanes(t, lanesJSON, egressAllow)
+}
+
+func newHarnessWithLanes(t *testing.T, lanes, egressAllow string) (*Proxy, *tls.Config, *capture) {
 	t.Helper()
 
-	cfg, err := config.Load(lanesJSON, egressAllow)
+	cfg, err := config.Load(lanes, egressAllow)
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
@@ -238,6 +251,113 @@ func TestPathOutsidePrefixIsBlocked(t *testing.T) {
 	}
 	if len(cap.dialed()) != 0 {
 		t.Errorf("blocked request still dialled upstream: %v", cap.dialed())
+	}
+}
+
+func TestEscapedPathIsMatchedAndForwardedWithoutRewriting(t *testing.T) {
+	p, clientTLS, cap := newHarness(t, "")
+	resp := roundTrip(t, p, clientTLS, "sentry.io", "",
+		"/api/0/projects/acme/group%2fproject/caf%C3%A9%7Cnotes?next=%2Fadmin",
+		map[string]string{"Authorization": "******"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := cap.requestURI(); got != "/api/0/projects/acme/group%2fproject/caf%C3%A9%7Cnotes?next=%2Fadmin" {
+		t.Fatalf("upstream request URI = %q", got)
+	}
+	if got := cap.lastRequest.Header.Get("Authorization"); got != "******" {
+		t.Fatalf("upstream Authorization = %q", got)
+	}
+}
+
+func TestEscapedPathPrefixMatchesHexCaseWithoutDecoding(t *testing.T) {
+	lanes := `[{"name":"gitlab","placeholder":"PH","real":"REAL",
+	           "targets":[{"host":"gitlab.com","path_prefix":"/api/v4/projects/group%2fproject/"}]}]`
+	p, clientTLS, cap := newHarnessWithLanes(t, lanes, "")
+	resp := roundTrip(t, p, clientTLS, "gitlab.com", "",
+		"/api/v4/projects/group%2Fproject/issues",
+		map[string]string{"Authorization": "PH"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := cap.lastRequest.Header.Get("Authorization"); got != "REAL" {
+		t.Fatalf("upstream Authorization = %q", got)
+	}
+	if got := cap.requestURI(); got != "/api/v4/projects/group%2Fproject/issues" {
+		t.Fatalf("upstream request URI = %q", got)
+	}
+}
+
+func TestEscapedSeparatorCannotSatisfyLiteralPathPrefix(t *testing.T) {
+	p, clientTLS, cap := newHarness(t, "")
+	resp := roundTrip(t, p, clientTLS, "sentry.io", "",
+		"/api/0/projects%2Facme/issues",
+		map[string]string{"Authorization": "******"})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := cap.dialed(); len(got) != 0 {
+		t.Fatalf("escaped separator request dialled upstream: %v", got)
+	}
+}
+
+func TestInterceptRejectsTraversalPathsBeforeSwapOrDial(t *testing.T) {
+	for _, requestPath := range []string{
+		"/api/0/projects/acme/%2e%2e/admin",
+		"/api/0/projects/acme%2f..%2fadmin",
+		`/api/0/projects/acme\..\admin`,
+		"/api/0/projects/acme/%252e%252e/admin",
+		"/api/0/projects/acme/%25252e%25252e/admin",
+		"/api/0/projects/acme/%25%32%45%25%32%45/admin",
+		"/api/0/projects/acme/..;param/admin",
+		"/api/0/projects/acme/..%3bparam/admin",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			p, clientTLS, cap := newHarness(t, "")
+			resp := roundTrip(t, p, clientTLS, "sentry.io", "", requestPath,
+				map[string]string{"Authorization": "******"})
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			if got := cap.dialed(); len(got) != 0 {
+				t.Fatalf("ambiguous request dialled upstream: %v", got)
+			}
+			if strings.Contains(cap.lastRawBytes, "REAL-SENTRY-SECRET") {
+				t.Fatal("credential was substituted before path rejection")
+			}
+		})
+	}
+}
+
+func TestInterceptAllowsEncodedIdentifiersDotsAndRepeatedSeparators(t *testing.T) {
+	for _, requestPath := range []string{
+		"/api/0/projects/acme/group%2Fproject",
+		"/api/0/projects/acme/report%2Etxt",
+		"/api/0/projects/acme//admin",
+		"/api/0/projects/acme/./admin",
+		"/api/0/projects/acme/caf%C3%A9%7Cnotes",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			p, clientTLS, cap := newHarness(t, "")
+			resp := roundTrip(t, p, clientTLS, "sentry.io", "", requestPath,
+				map[string]string{"Authorization": "******"})
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			if got := cap.requestURI(); got != requestPath {
+				t.Fatalf("upstream request URI = %q, want %q", got, requestPath)
+			}
+		})
 	}
 }
 

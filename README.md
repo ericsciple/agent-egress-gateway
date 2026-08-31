@@ -76,6 +76,28 @@ reads, so a token that could write is only ever attached to a request that canno
 matches. Two credentials can then split one endpoint by method: a read token for `GET` and a write token
 for `POST`.
 
+**Path authorization and forwarding use the same escaped representation.** The
+gateway preserves and forwards the escaped path exactly as the client sent it.
+Policy matching changes only percent-escape hex case, so `%2f` and `%2F` are
+equivalent without treating either as a routing separator. Before selecting a
+lane, a separate non-forwarded safety projection follows nested percent
+encoding until it stabilizes and rejects any form that exposes a complete `..`
+traversal segment, including servlet-style `..;parameter` segments.
+Legitimate encoded identifiers such as GitLab `group%2Fproject`, scoped npm
+packages, dots inside filenames, and repeated separators remain valid.
+
+For example, `%252E%252E` is a double-encoded `..`: decoding once produces
+`%2E%2E`, and decoding a second time produces `..`. Such traversal forms are
+rejected before credential substitution or an upstream connection. Configured
+`path_prefix` values use the same validation and percent-escape comparison.
+They must use the same escaped spelling clients send: a prefix containing
+`group%2Fproject` does not silently become `group/project`. This is a breaking
+change for a prefix that previously relied on Go's decoded `URL.Path`; such a
+request now fails closed instead of silently matching a differently escaped
+prefix. Raw non-ASCII and punctuation that Go would rewrite must be
+percent-encoded by the client so the gateway can preserve the request target
+exactly.
+
 **The substitution preserves what the caller sent.** `Bearer <placeholder>` becomes
 `Bearer <credential>`; a bare placeholder becomes a bare credential. The gateway
 does not rebuild the header from a template, so no per-lane format configuration is

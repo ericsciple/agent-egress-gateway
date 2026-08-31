@@ -16,11 +16,13 @@ import (
 type recordingTransport struct {
 	dialedHosts []string
 	lastHeader  http.Header
+	lastURI     string
 }
 
 func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	rt.dialedHosts = append(rt.dialedHosts, r.URL.Host)
 	rt.lastHeader = r.Header.Clone()
+	rt.lastURI = r.URL.RequestURI()
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{},
@@ -30,8 +32,12 @@ func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error)
 }
 
 func newRunner(t *testing.T, egressAllow string) (http.Handler, *recordingTransport) {
+	return newRunnerWithLanes(t, lanesJSON, egressAllow)
+}
+
+func newRunnerWithLanes(t *testing.T, lanes, egressAllow string) (http.Handler, *recordingTransport) {
 	t.Helper()
-	cfg, err := config.Load(lanesJSON, egressAllow)
+	cfg, err := config.Load(lanes, egressAllow)
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
@@ -122,6 +128,105 @@ func TestRunnerBlocksPathOutsidePrefix(t *testing.T) {
 	}
 	if len(rt.dialedHosts) != 0 {
 		t.Errorf("blocked request still dialled: %v", rt.dialedHosts)
+	}
+}
+
+func TestRunnerEscapedPathIsMatchedAndForwardedWithoutRewriting(t *testing.T) {
+	h, rt := newRunner(t, "")
+	rec := doRunner(h, "sentry.io", "/api/0/projects/acme/group%2fproject/caf%C3%A9%7Cnotes?next=%2Fadmin",
+		map[string]string{"Authorization": "******"})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rt.lastURI != "/api/0/projects/acme/group%2fproject/caf%C3%A9%7Cnotes?next=%2Fadmin" {
+		t.Fatalf("upstream request URI = %q", rt.lastURI)
+	}
+	if got := rt.lastHeader.Get("Authorization"); got != "******" {
+		t.Fatalf("upstream Authorization = %q", got)
+	}
+}
+
+func TestRunnerEscapedPathPrefixMatchesHexCaseWithoutDecoding(t *testing.T) {
+	lanes := `[{"name":"gitlab","placeholder":"PH","real":"REAL",
+	           "targets":[{"host":"gitlab.com","path_prefix":"/api/v4/projects/group%2fproject/"}]}]`
+	h, rt := newRunnerWithLanes(t, lanes, "")
+	rec := doRunner(h, "gitlab.com", "/api/v4/projects/group%2Fproject/issues",
+		map[string]string{"Authorization": "PH"})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rt.lastHeader.Get("Authorization"); got != "REAL" {
+		t.Fatalf("upstream Authorization = %q", got)
+	}
+	if rt.lastURI != "/api/v4/projects/group%2Fproject/issues" {
+		t.Fatalf("upstream request URI = %q", rt.lastURI)
+	}
+}
+
+func TestRunnerEscapedSeparatorCannotSatisfyLiteralPathPrefix(t *testing.T) {
+	h, rt := newRunner(t, "")
+	rec := doRunner(h, "sentry.io", "/api/0/projects%2Facme/issues",
+		map[string]string{"Authorization": "******"})
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if len(rt.dialedHosts) != 0 {
+		t.Fatalf("escaped separator request dialled upstream: %v", rt.dialedHosts)
+	}
+}
+
+func TestRunnerRejectsTraversalPathsBeforeSwapOrDial(t *testing.T) {
+	for _, requestPath := range []string{
+		"/api/0/projects/acme/%2e%2e/admin",
+		"/api/0/projects/acme%2f..%2fadmin",
+		`/api/0/projects/acme\..\admin`,
+		"/api/0/projects/acme/%252e%252e/admin",
+		"/api/0/projects/acme/%25252e%25252e/admin",
+		"/api/0/projects/acme/%25%32%45%25%32%45/admin",
+		"/api/0/projects/acme/..;param/admin",
+		"/api/0/projects/acme/..%3bparam/admin",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			h, rt := newRunner(t, "")
+			rec := doRunner(h, "sentry.io", requestPath,
+				map[string]string{"Authorization": "******"})
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+			if len(rt.dialedHosts) != 0 {
+				t.Fatalf("ambiguous request dialled upstream: %v", rt.dialedHosts)
+			}
+			if rt.lastHeader != nil {
+				t.Fatal("ambiguous request reached the upstream transport")
+			}
+		})
+	}
+}
+
+func TestRunnerAllowsEncodedIdentifiersDotsAndRepeatedSeparators(t *testing.T) {
+	for _, requestPath := range []string{
+		"/api/0/projects/acme/group%2Fproject",
+		"/api/0/projects/acme/report%2Etxt",
+		"/api/0/projects/acme//admin",
+		"/api/0/projects/acme/./admin",
+		"/api/0/projects/acme/caf%C3%A9%7Cnotes",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			h, rt := newRunner(t, "")
+			rec := doRunner(h, "sentry.io", requestPath,
+				map[string]string{"Authorization": "******"})
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if rt.lastURI != requestPath {
+				t.Fatalf("upstream request URI = %q, want %q", rt.lastURI, requestPath)
+			}
+		})
 	}
 }
 
