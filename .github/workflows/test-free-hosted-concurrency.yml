@@ -4,19 +4,40 @@ on:
   push:
     branches:
       - users/ericsciple/26-09-test-free-concurrency
+  workflow_dispatch:
 
 jobs:
-  macos:
-    name: macOS slot ${{ matrix.slot }}
-    runs-on: macos-latest
-    timeout-minutes: 10
+  telemetry:
+    name: ${{ matrix.os }} sample ${{ matrix.slot }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix:
-        slot: [1, 2]
+        include:
+          - { os: ubuntu-latest, slot: 1 }
+          - { os: macos-latest, slot: 2 }
+          - { os: ubuntu-latest, slot: 3 }
+          - { os: macos-latest, slot: 4 }
+          - { os: ubuntu-latest, slot: 5 }
+          - { os: macos-latest, slot: 6 }
+          - { os: ubuntu-latest, slot: 7 }
+          - { os: macos-latest, slot: 8 }
+          - { os: ubuntu-latest, slot: 9 }
+          - { os: macos-latest, slot: 10 }
+          - { os: ubuntu-latest, slot: 11 }
+          - { os: macos-latest, slot: 12 }
+          - { os: ubuntu-latest, slot: 13 }
+          - { os: macos-latest, slot: 14 }
+          - { os: ubuntu-latest, slot: 15 }
+          - { os: macos-latest, slot: 16 }
+          - { os: ubuntu-latest, slot: 17 }
+          - { os: macos-latest, slot: 18 }
+          - { os: ubuntu-latest, slot: 19 }
+          - { os: macos-latest, slot: 20 }
     steps:
-      - name: Hold concurrency slot
+      - name: Generate concurrency sample
         run: |
-          echo "Holding slot ${{ matrix.slot }}"
-          sleep 300
+          echo "Sample ${{ matrix.slot }} on ${{ matrix.os }}"
+          sleep 10
