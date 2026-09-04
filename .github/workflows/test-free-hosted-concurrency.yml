@@ -1,0 +1,22 @@
+name: Test free hosted concurrency
+
+on:
+  push:
+    branches:
+      - users/ericsciple/26-09-test-free-concurrency
+
+jobs:
+  linux:
+    name: Linux slot ${{ matrix.slot }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Hold concurrency slot
+        run: |
+          echo "Holding slot ${{ matrix.slot }}"
+          sleep 300
